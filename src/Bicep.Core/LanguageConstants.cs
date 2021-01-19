@@ -24,6 +24,7 @@ namespace Bicep.Core
         public const string VariableKeyword = "var";
         public const string ResourceKeyword = "resource";
         public const string ModuleKeyword = "module";
+        public const string ExistingKeyword = "existing";
 
         public const string IfKeyword = "if";
 

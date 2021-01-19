@@ -206,6 +206,11 @@ namespace Bicep.Core.Emit
 
             foreach (var resourceSymbol in this.context.SemanticModel.Root.ResourceDeclarations)
             {
+                if (resourceSymbol.DeclaringResource.IsExistingResource())
+                {
+                    continue;
+                }
+                
                 this.EmitResource(resourceSymbol);
             }
 
@@ -361,7 +366,10 @@ namespace Bicep.Core.Emit
                 switch (dependency)
                 {
                     case ResourceSymbol resourceDependency:
-                        emitter.EmitResourceIdReference(resourceDependency);
+                        if (!resourceDependency.DeclaringResource.IsExistingResource())
+                        {
+                            emitter.EmitResourceIdReference(resourceDependency);
+                        }
                         break;
                     case ModuleSymbol moduleDependency:
                         emitter.EmitResourceIdReference(moduleDependency);
