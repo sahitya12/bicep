@@ -14,19 +14,20 @@ namespace Bicep.Core.Parsing
     public class Lexer
     {
         // maps the escape character (that follows the backslash) to its value
-        private static readonly ImmutableSortedDictionary<char, char> CharacterEscapes = new Dictionary<char, char>
+        private static readonly ImmutableSortedDictionary<char, char> SingleCharacterEscapes = new Dictionary<char, char>
         {
             {'n', '\n'},
             {'r', '\r'},
             {'t', '\t'},
             {'\\', '\\'},
             {'\'', '\''},
-
-            // dollar character is reserved for future string interpolation work
             {'$', '$'}
         }.ToImmutableSortedDictionary();
 
-        private static readonly IEnumerable<string> CharacterEscapeSequences = CharacterEscapes.Keys.Select(c => $"\\{c}").ToArray();
+        private static readonly ImmutableArray<string> CharacterEscapeSequences = SingleCharacterEscapes.Keys
+            .Select(c => $"\\{c}")
+            .Append("\\u{...}")
+            .ToImmutableArray();
 
         // the rules for parsing are slightly different if we are inside an interpolated string (for example, a new line should result in a lex error).
         // to handle this, we use a modal lexing pattern with a stack to ensure we're applying the correct set of rules.
@@ -140,7 +141,7 @@ namespace Bicep.Core.Parsing
 
                     char escapeChar = window.Next();
 
-                    if (CharacterEscapes.TryGetValue(escapeChar, out char escapeCharValue) == false)
+                    if (SingleCharacterEscapes.TryGetValue(escapeChar, out char escapeCharValue) == false)
                     {
                         // invalid escape character
                         return null;
@@ -401,20 +402,101 @@ namespace Bicep.Core.Parsing
                     continue;
                 }
 
+                // an escape sequence was started with \
+
                 if (textWindow.IsAtEnd())
                 {
+                    // the escape was unterminated
                     AddDiagnostic(b => b.UnterminatedStringEscapeSequenceAtEof());
                     return isAtStartOfString ? TokenType.StringComplete : TokenType.StringRightPiece;
                 }
 
+                // the escape sequence has a char after the \
+                // consume it
                 nextChar = textWindow.Peek();
                 textWindow.Advance();
 
-                if (CharacterEscapes.ContainsKey(nextChar) == false)
+                if (nextChar == 'u')
                 {
-                    // the span of the error is the incorrect escape sequence
-                    AddDiagnostic(textWindow.GetLookbehindSpan(2), b => b.UnterminatedStringEscapeSequenceUnrecognized(CharacterEscapeSequences));
+                    // unicode escape
+
+                    if (textWindow.IsAtEnd())
+                    {
+                        // string was prematurely terminated
+                        // reusing the first check in the loop body to produce the diagnostic
+                        continue;
+                    }
+
+                    nextChar = textWindow.Peek();
+                    if (nextChar != '{')
+                    {
+                        // \u must be followed by {, but it's not
+                        AddDiagnostic(textWindow.GetLookbehindSpan(2), b => b.InvalidUnicodeEscape());
+                        continue;
+                    }
+
+                    textWindow.Advance();
+                    if (textWindow.IsAtEnd())
+                    {
+                        // string was prematurely terminated
+                        // reusing the first check in the loop body to produce the diagnostic
+                        continue;
+                    }
+
+                    int hexDigitCount = this.ScanHexNumber();
+                    if (textWindow.IsAtEnd())
+                    {
+                        // string was prematurely terminated
+                        // reusing the first check in the loop body to produce the diagnostic
+                        continue;
+                    }
+
+                    if (hexDigitCount <= 0)
+                    {
+                        // we didn't get any hex digits
+                        AddDiagnostic(textWindow.GetLookbehindSpan(2), b => b.InvalidUnicodeEscape());
+                        continue;
+                    }
+
+                    nextChar = textWindow.Peek();
+                    if (nextChar != '}')
+                    {
+                        // hex digits must be followed by }, but it's not
+                        AddDiagnostic(textWindow.GetLookbehindSpan(hexDigitCount + 2), b => b.InvalidUnicodeEscape());
+                        continue;
+                    }
+
+                    textWindow.Advance();
                 }
+                else
+                {
+                    // not a unicode escape
+                    if (SingleCharacterEscapes.ContainsKey(nextChar) == false)
+                    {
+                        // the span of the error is the incorrect escape sequence
+                        AddDiagnostic(textWindow.GetLookbehindSpan(2), b => b.UnterminatedStringEscapeSequenceUnrecognized(CharacterEscapeSequences));
+                    }
+                }
+            }
+        }
+
+        private int ScanHexNumber()
+        {
+            int count = 0;
+            while (true)
+            {
+                if (textWindow.IsAtEnd())
+                {
+                    return count;
+                }
+
+                if (!IsHexDigit(textWindow.Peek()))
+                {
+                    return count;
+                }
+
+                textWindow.Advance();
+                count++;
             }
         }
 
@@ -650,6 +732,8 @@ namespace Bicep.Core.Parsing
         private static bool IsIdentifierContinuation(char c) => IsIdentifierStart(c) || IsDigit(c) || c > MaxAscii && IsUnicodeIdentifierContinuation(CharUnicodeInfo.GetUnicodeCategory(c));
 
         private static bool IsDigit(char c) => c >= '0' && c <= '9';
+
+        private static bool IsHexDigit(char c) => IsDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F';
 
         private static bool IsWhiteSpace(char c) => c == ' ' || c == '\t';
 
